@@ -1,0 +1,51 @@
+---
+name: analyze-video
+description: >-
+  Turns a local video into timestamped contact sheets and a transcript with
+  ffmpeg and local whisper.cpp. Use when the user asks to review, watch,
+  transcribe, or analyze a video file (.mp4, .mov, .webm, .mkv, .m4v),
+  including a screen recording. The video and audio stay on the machine.
+---
+
+# Analyze video
+
+Process the file on this machine. Do not upload the video or its audio, and do not send either to a cloud transcription service.
+
+## Run
+
+Run this skill's `scripts/analyze_video.py` by its absolute path. The working directory does not matter:
+
+```bash
+python3 /absolute/path/to/analyze-video/scripts/analyze_video.py "/absolute/path/to/video.mp4"
+```
+
+The script writes `<video folder>/_video/<recording name>/`:
+
+- `index.md` — duration, frame interval, and the sheet list
+- `transcript.md` — timestamped local transcript, or a note that there is no audio
+- `sheets/sheet_NNN.jpg` — contact sheets
+- `frames/f_NNNN.jpg` — individual frames, already stamped with a timestamp
+- `manifest.json` — source fingerprint and the settings used
+
+A second run with the same file and the same settings prints `already processed` and does not redo the work. A different interval, model, language, or scene setting processes the file again.
+
+If the script prints that `ffmpeg`, `ffprobe`, or `whisper-cli` is not on PATH, stop and say which tool is missing. If it prints any other error, stop and say the video is still unprocessed. Do not sample frames yourself as a substitute.
+
+## Read the result
+
+1. Read `index.md`.
+2. Read `transcript.md` in full.
+3. Read every contact sheet image.
+4. Open one file under `frames/` only when a cell is unreadable.
+
+## When the user wants different settings
+
+Flags override `config.json` for that run. The usual change is the frame interval (default 5 seconds):
+
+```bash
+python3 scripts/analyze_video.py "/absolute/path/to/video.mp4" --interval 10
+```
+
+Other flags: `--language en`, `--model medium.en`, `--no-scene`, `--scene-threshold 0.2`, `--min-scene-gap 1`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--config /path/to/config.json`.
+
+Defaults and the full key list are in `config.json` and `README.md` in this skill folder. An English-only model (`medium.en` and the other `*.en` names) cannot use `"language": "auto"`.

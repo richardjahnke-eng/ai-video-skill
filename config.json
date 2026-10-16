@@ -1,0 +1,20 @@
+{
+  "interval_sec": 5,
+  "scene_threshold": 0.2,
+  "min_scene_gap_sec": 1,
+  "scene_detection": true,
+  "frame_width": 1280,
+  "sheet_cols": 4,
+  "sheet_rows": 3,
+  "cell_width": 480,
+  "cell_height": 270,
+  "label_height": 36,
+  "jpeg_quality": 85,
+  "ffmpeg_q": 3,
+  "model": "medium",
+  "language": "auto",
+  "threads": 0,
+  "keep_audio": false,
+  "font": "",
+  "model_dir": ""
+}
