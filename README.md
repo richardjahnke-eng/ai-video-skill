@@ -33,14 +33,13 @@ Audio is extracted as 16 kHz mono WAV, passed to `whisper-cli`, then deleted. `t
 
 ## Requirements
 
-These must already be on `PATH` before the first run:
+macOS and Linux use `scripts/analyze_video`. Windows uses `powershell -NoProfile -File scripts/analyze_video.ps1`. Either one checks these once, then writes `~/.cache/analyze-video/preflight.json`. Later runs print nothing while the recorded programs still exist. A missing one is named, with the install command for that OS, and the command exits. Nothing here is installed except the Whisper model file.
 
-- `ffmpeg`
-- `ffprobe`
+- `python3` 3.9 or newer
+- Pillow (`PIL`) for that interpreter
+- `ffmpeg` and `ffprobe`
 - `whisper-cli` (whisper.cpp)
-- `python3` with Pillow (`PIL`)
-
-The script names the missing program and exits. It does not install anything except the Whisper model file.
+- `curl`, for the first Whisper model download
 
 On first use of the default model, the script downloads `ggml-medium.bin` (multilingual Medium, about 1.5 GB) into `~/.cache/whisper/`. That model is required for `"language": "auto"`. An English-only model such as `ggml-medium.en.bin` works only with `"language": "en"`.
 
@@ -70,11 +69,11 @@ Edit `config.json` in this folder. A command-line flag overrides the file for on
 | `model_dir` | `""` | Folder for downloaded models. Empty uses `~/.cache/whisper`. |
 
 ```bash
-python3 scripts/analyze_video.py "/path/to/video.mp4"
-python3 scripts/analyze_video.py "/path/to/video.mp4" --interval 10
-python3 scripts/analyze_video.py "/path/to/video.mp4" --language en --model medium.en
-python3 scripts/analyze_video.py "/path/to/video.mp4" --no-scene
-python3 scripts/analyze_video.py "/path/to/video.mp4" --config /path/to/other.json
+scripts/analyze_video "/path/to/video.mp4"
+scripts/analyze_video "/path/to/video.mp4" --interval 10
+scripts/analyze_video "/path/to/video.mp4" --language en --model medium.en
+scripts/analyze_video "/path/to/video.mp4" --no-scene
+scripts/analyze_video "/path/to/video.mp4" --config /path/to/other.json
 ```
 
 Also: `--scene-threshold`, `--min-scene-gap`, `--scene`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--no-keep-audio`.

@@ -1,0 +1,201 @@
+#!/bin/sh
+# Check once that this machine can run the skill. Later runs print nothing
+# while the same programs still resolve. Install commands appear only on failure.
+set -eu
+
+VERSION=1
+STAMP="${XDG_CACHE_HOME:-$HOME/.cache}/analyze-video/preflight.json"
+
+platform() {
+  os=$(uname -s 2>/dev/null || true)
+  case "$os" in
+    Darwin) printf '%s\n' mac ;;
+    MINGW*|MSYS*|CYGWIN*) printf '%s\n' windows ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        printf '%s\n' apt
+      elif command -v dnf >/dev/null 2>&1; then
+        printf '%s\n' dnf
+      elif command -v pacman >/dev/null 2>&1; then
+        printf '%s\n' pacman
+      else
+        printf '%s\n' linux
+      fi
+      ;;
+    *) printf '%s\n' other ;;
+  esac
+}
+
+hint() {
+  case "$(platform)" in
+    mac)
+      case "$1" in
+        python3) printf '%s\n' "brew install python" ;;
+        Pillow) printf '%s\n' "python3 -m pip install Pillow" ;;
+        ffmpeg) printf '%s\n' "brew install ffmpeg" ;;
+        whisper-cli) printf '%s\n' "brew install whisper-cpp" ;;
+        curl) printf '%s\n' "brew install curl" ;;
+      esac
+      ;;
+    apt)
+      case "$1" in
+        python3) printf '%s\n' "sudo apt install python3 python3-pip" ;;
+        Pillow) printf '%s\n' "sudo apt install python3-pil" ;;
+        ffmpeg) printf '%s\n' "sudo apt install ffmpeg" ;;
+        whisper-cli)
+          distro=$(
+            if [ -r /etc/os-release ]; then
+              # shellcheck disable=SC1091
+              . /etc/os-release
+              printf '%s\n' "${ID:-}"
+            fi
+          )
+          if [ "$distro" = "debian" ]; then
+            printf '%s\n' "sudo apt install whisper.cpp-tools"
+          else
+            printf '%s\n' "sudo apt install whisper.cpp"
+          fi
+          ;;
+        curl) printf '%s\n' "sudo apt install curl" ;;
+      esac
+      ;;
+    dnf)
+      case "$1" in
+        python3) printf '%s\n' "sudo dnf install python3" ;;
+        Pillow) printf '%s\n' "sudo dnf install python3-pillow" ;;
+        ffmpeg) printf '%s\n' "sudo dnf install ffmpeg" ;;
+        whisper-cli) printf '%s\n' "Fedora's whisper-cpp package does not include whisper-cli. Build https://github.com/ggml-org/whisper.cpp and put whisper-cli on PATH." ;;
+        curl) printf '%s\n' "sudo dnf install curl" ;;
+      esac
+      ;;
+    pacman)
+      case "$1" in
+        python3) printf '%s\n' "sudo pacman -S python" ;;
+        Pillow) printf '%s\n' "sudo pacman -S python-pillow" ;;
+        ffmpeg) printf '%s\n' "sudo pacman -S ffmpeg" ;;
+        whisper-cli) printf '%s\n' "sudo pacman -S whisper-cpp" ;;
+        curl) printf '%s\n' "sudo pacman -S curl" ;;
+      esac
+      ;;
+    windows)
+      case "$1" in
+        python3) printf '%s\n' "winget install --id Python.Python.3.12 -e" ;;
+        Pillow) printf '%s\n' "py -3 -m pip install Pillow" ;;
+        ffmpeg) printf '%s\n' "winget install --id Gyan.FFmpeg -e" ;;
+        whisper-cli) printf '%s\n' "No winget package. Build https://github.com/ggml-org/whisper.cpp and put whisper-cli.exe on PATH." ;;
+        curl) printf '%s\n' "Install curl.exe and put it on PATH" ;;
+      esac
+      ;;
+    *)
+      case "$1" in
+        python3) printf '%s\n' "Install Python 3.9 or newer as python3" ;;
+        Pillow) printf '%s\n' "python3 -m pip install Pillow" ;;
+        ffmpeg) printf '%s\n' "Install ffmpeg so ffmpeg and ffprobe are on PATH" ;;
+        whisper-cli) printf '%s\n' "Install whisper.cpp so whisper-cli is on PATH" ;;
+        curl) printf '%s\n' "Install curl" ;;
+      esac
+      ;;
+  esac
+}
+
+find_python() {
+  for candidate in python3 python; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    cand=$(command -v "$candidate")
+    if "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PY=$(find_python || true)
+if [ -f "$STAMP" ] && [ -n "$PY" ]; then
+  if STAMP="$STAMP" VERSION="$VERSION" "$PY" -c '
+import json, os, sys
+from pathlib import Path
+stamp = Path(os.environ["STAMP"])
+try:
+    data = json.loads(stamp.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+if data.get("version") != int(os.environ["VERSION"]):
+    raise SystemExit(1)
+tools = data.get("tools") or {}
+if os.path.realpath(sys.executable) != tools.get("python3"):
+    raise SystemExit(1)
+if sys.version_info < (3, 9):
+    raise SystemExit(1)
+for name in ("ffmpeg", "ffprobe", "whisper-cli", "curl"):
+    path = tools.get(name) or ""
+    if not path or not os.access(path, os.X_OK):
+        raise SystemExit(1)
+try:
+    import PIL
+except ImportError:
+    raise SystemExit(1)
+'; then
+    exit 0
+  fi
+fi
+
+missing=""
+add_missing() {
+  missing="${missing}
+- $1: $2
+  $(hint "$1")"
+}
+
+if [ -z "$PY" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    got=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || printf '%s\n' "unknown")
+    add_missing python3 "need 3.9+ (found $got)"
+  else
+    add_missing python3 "not on PATH (need 3.9+)"
+  fi
+elif ! "$PY" -c 'import PIL' >/dev/null 2>&1; then
+  add_missing Pillow "not installed for $PY"
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  add_missing ffmpeg "ffmpeg and ffprobe must both be on PATH"
+fi
+if ! command -v whisper-cli >/dev/null 2>&1; then
+  add_missing whisper-cli "not on PATH"
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  add_missing curl "not on PATH (used to download the Whisper model)"
+fi
+
+if [ -n "$missing" ]; then
+  printf 'prerequisite missing:%s\n' "$missing" >&2
+  exit 1
+fi
+
+FFMPEG=$(command -v ffmpeg)
+FFPROBE=$(command -v ffprobe)
+WHISPER=$(command -v whisper-cli)
+CURL=$(command -v curl)
+export STAMP VERSION PY FFMPEG FFPROBE WHISPER CURL
+"$PY" -c '
+import json, os, sys
+from pathlib import Path
+import PIL
+stamp = Path(os.environ["STAMP"])
+stamp.parent.mkdir(parents=True, exist_ok=True)
+data = {
+    "version": int(os.environ["VERSION"]),
+    "python_version": "%d.%d.%d" % sys.version_info[:3],
+    "pillow": getattr(PIL, "__version__", ""),
+    "tools": {
+        "python3": os.path.realpath(sys.executable),
+        "ffmpeg": os.path.realpath(os.environ["FFMPEG"]),
+        "ffprobe": os.path.realpath(os.environ["FFPROBE"]),
+        "whisper-cli": os.path.realpath(os.environ["WHISPER"]),
+        "curl": os.path.realpath(os.environ["CURL"]),
+    },
+}
+stamp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+'
+exit 0

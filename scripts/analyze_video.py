@@ -12,7 +12,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -732,12 +731,26 @@ def resolve_config_path(arg):
     return None
 
 
+def preflight_command():
+    scripts = SKILL_ROOT / "scripts"
+    if os.name == "nt":
+        return [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(scripts / "preflight.ps1"),
+        ]
+    return [str(scripts / "preflight")]
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    for tool in ("ffmpeg", "ffprobe", "whisper-cli"):
-        if shutil.which(tool) is None:
-            print(f"{tool} is not on PATH", file=sys.stderr)
-            return 1
+    check = subprocess.run(preflight_command(), stderr=subprocess.PIPE, text=True)
+    if check.returncode != 0:
+        sys.stderr.write(check.stderr)
+        return check.returncode
     try:
         cfg = normalize(apply_cli(load_config(resolve_config_path(args.config)), args))
         process(args.video, cfg)

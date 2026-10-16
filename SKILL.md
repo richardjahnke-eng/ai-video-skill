@@ -13,10 +13,18 @@ Process the file on this machine. Do not upload the video or its audio, and do n
 
 ## Run
 
-Run this skill's `scripts/analyze_video.py` by its absolute path. The working directory does not matter:
+Run this skill's entry script by its absolute path. The working directory does not matter.
+
+macOS and Linux:
 
 ```bash
-python3 /absolute/path/to/analyze-video/scripts/analyze_video.py "/absolute/path/to/video.mp4"
+/absolute/path/to/analyze-video/scripts/analyze_video "/absolute/path/to/video.mp4"
+```
+
+Windows:
+
+```powershell
+powershell -NoProfile -File \absolute\path\to\analyze-video\scripts\analyze_video.ps1 "C:\path\to\video.mp4"
 ```
 
 The script writes `<video folder>/_video/<recording name>/`:
@@ -29,7 +37,7 @@ The script writes `<video folder>/_video/<recording name>/`:
 
 A second run with the same file and the same settings prints `already processed` and does not redo the work. A different interval, model, language, or scene setting processes the file again.
 
-If the script prints that `ffmpeg`, `ffprobe`, or `whisper-cli` is not on PATH, stop and say which tool is missing. If it prints any other error, stop and say the video is still unprocessed. Do not sample frames yourself as a substitute.
+If the command fails, stop and relay its output. Do not sample frames yourself as a substitute.
 
 ## Read the result
 
@@ -43,8 +51,10 @@ If the script prints that `ffmpeg`, `ffprobe`, or `whisper-cli` is not on PATH, 
 Flags override `config.json` for that run. The usual change is the frame interval (default 5 seconds):
 
 ```bash
-python3 scripts/analyze_video.py "/absolute/path/to/video.mp4" --interval 10
+/absolute/path/to/analyze-video/scripts/analyze_video "/absolute/path/to/video.mp4" --interval 10
 ```
+
+On Windows, pass the same flags to `scripts/analyze_video.ps1`.
 
 Other flags: `--language en`, `--model medium.en`, `--no-scene`, `--scene-threshold 0.2`, `--min-scene-gap 1`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--config /path/to/config.json`.
 

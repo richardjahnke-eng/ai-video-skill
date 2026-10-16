@@ -1,0 +1,6 @@
+#!/bin/sh
+# Entry point. preflight is silent once this machine has passed.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+"$ROOT/scripts/preflight"
+exec python3 "$ROOT/scripts/analyze_video.py" "$@"
