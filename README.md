@@ -67,6 +67,9 @@ Edit `config.json` in this folder. A command-line flag overrides the file for on
 | `keep_audio` | `false` | Leave the WAV in the output folder. |
 | `font` | `""` | Optional `.ttf` path for timestamps. Empty uses Arial, DejaVu, Liberation, or a built-in bitmap font. |
 | `model_dir` | `""` | Folder for downloaded models. Empty uses `~/.cache/whisper`. |
+| `initial_prompt` | `""` | Words Whisper should expect. Empty passes no prompt. A prompt can make the model write those words into speech that did not include them. |
+| `max_frames` | `0` | `0` means no cap. A positive number widens the interval and the scene gap so the frame count can stay under it. |
+| `extract_frames` | `true` | `false` writes the transcript only. |
 
 ```bash
 scripts/analyze_video "/path/to/video.mp4"
@@ -76,7 +79,7 @@ scripts/analyze_video "/path/to/video.mp4" --no-scene
 scripts/analyze_video "/path/to/video.mp4" --config /path/to/other.json
 ```
 
-Also: `--scene-threshold`, `--min-scene-gap`, `--scene`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--no-keep-audio`.
+Also: `--scene-threshold`, `--min-scene-gap`, `--scene`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--no-keep-audio`, `--prompt`, `--max-frames`, `--skip-frames`.
 
 Output always goes next to the video, in `_video/<recording name>/`. The script refuses a file that is already inside `_video`.
 

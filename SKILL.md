@@ -35,7 +35,7 @@ The script writes `<video folder>/_video/<recording name>/`:
 - `frames/f_NNNN.jpg` — individual frames, already stamped with a timestamp
 - `manifest.json` — source fingerprint and the settings used
 
-A second run with the same file and the same settings prints `already processed` and does not redo the work. A different interval, model, language, or scene setting processes the file again.
+A second run with the same file and the same settings prints `already processed` and does not redo the work. A different interval, model, language, scene setting, prompt, frame cap, or skip-frames choice processes the file again.
 
 If the command fails, stop and relay its output. Do not sample frames yourself as a substitute.
 
@@ -46,6 +46,8 @@ If the command fails, stop and relay its output. Do not sample frames yourself a
 3. Read every contact sheet image.
 4. Open one file under `frames/` only when a cell is unreadable.
 
+If `index.md` says frames were skipped, read `transcript.md` and stop. There are no sheets.
+
 ## When the user wants different settings
 
 Flags override `config.json` for that run. The usual change is the frame interval (default 5 seconds):
@@ -55,6 +57,8 @@ Flags override `config.json` for that run. The usual change is the frame interva
 ```
 
 On Windows, pass the same flags to `scripts/analyze_video.ps1`.
+
+Pass `--prompt "terms already known for this video"` only when those names are already in the task. Do not invent a prompt. Pass `--max-frames N` for a long recording. `0` means no cap. Pass `--skip-frames` only when the user asks for a transcript or summary and does not ask to watch or review the picture.
 
 Other flags: `--language en`, `--model medium.en`, `--no-scene`, `--scene-threshold 0.2`, `--min-scene-gap 1`, `--sheet-cols`, `--sheet-rows`, `--frame-width`, `--keep-audio`, `--config /path/to/config.json`.
 

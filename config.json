@@ -16,5 +16,8 @@
   "threads": 0,
   "keep_audio": false,
   "font": "",
-  "model_dir": ""
+  "model_dir": "",
+  "initial_prompt": "",
+  "max_frames": 0,
+  "extract_frames": true
 }

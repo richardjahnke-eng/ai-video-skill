@@ -68,6 +68,9 @@ DEFAULTS = {
     "keep_audio": False,
     "font": "",
     "model_dir": "",
+    "initial_prompt": "",
+    "max_frames": 0,
+    "extract_frames": True,
 }
 SETTING_KEYS = (
     "interval_sec",
@@ -82,6 +85,9 @@ SETTING_KEYS = (
     "model",
     "language",
     "keep_audio",
+    "initial_prompt",
+    "max_frames",
+    "extract_frames",
 )
 PTS_RE = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
 
@@ -91,14 +97,18 @@ def log(message):
 
 
 def run(cmd, cwd=None):
-    return subprocess.run(
+    result = subprocess.run(
         cmd,
         cwd=cwd,
-        check=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or "").splitlines()[-40:])
+        program = Path(str(cmd[0])).name
+        raise RuntimeError(f"{program} failed\n{tail}".rstrip())
+    return result
 
 
 def fingerprint(path):
@@ -177,6 +187,12 @@ def apply_cli(cfg, args):
         cfg["scene_detection"] = args.scene_detection
     if args.keep_audio is not None:
         cfg["keep_audio"] = args.keep_audio
+    if args.prompt is not None:
+        cfg["initial_prompt"] = args.prompt
+    if args.max_frames is not None:
+        cfg["max_frames"] = args.max_frames
+    if args.skip_frames:
+        cfg["extract_frames"] = False
     return cfg
 
 
@@ -204,6 +220,9 @@ def normalize(cfg):
     cfg["language"] = str(cfg["language"]).strip().lower() or "auto"
     cfg["font"] = str(cfg["font"]).strip()
     cfg["model_dir"] = str(cfg["model_dir"]).strip()
+    cfg["initial_prompt"] = str(cfg["initial_prompt"]).strip()
+    cfg["max_frames"] = as_number(cfg["max_frames"], "max_frames", int)
+    cfg["extract_frames"] = as_bool(cfg["extract_frames"], "extract_frames")
     if cfg["interval_sec"] <= 0:
         raise RuntimeError("interval_sec must be greater than 0")
     if not 0 <= cfg["scene_threshold"] <= 1:
@@ -220,6 +239,8 @@ def normalize(cfg):
         raise RuntimeError("jpeg_quality must be between 1 and 95")
     if cfg["threads"] < 0:
         raise RuntimeError("threads must be 0 or greater")
+    if cfg["max_frames"] < 0:
+        raise RuntimeError("max_frames must be 0 or greater")
     if cfg["language"] != "auto" and not re.fullmatch(r"[a-z]{2,3}", cfg["language"]):
         raise RuntimeError("language must be 'auto' or a language code such as en")
     return cfg
@@ -562,6 +583,8 @@ def transcribe(video, out_dir, cfg):
             "-t",
             str(threads),
         ]
+        if cfg["initial_prompt"]:
+            cmd.extend(["--prompt", cfg["initial_prompt"]])
         run(cmd)
     finally:
         if not cfg["keep_audio"]:
@@ -595,21 +618,72 @@ def transcribe(video, out_dir, cfg):
     return kind, detected
 
 
-def write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg):
+def apply_frame_cap(cfg, duration):
+    """Widen the interval and scene gap so the frame count can stay under max_frames.
+
+    The returned config is a copy. max_frames 0 leaves the requested settings alone.
+    """
+    run = dict(cfg)
+    cap = run["max_frames"]
+    if cap <= 0 or duration <= 0:
+        return run
+    step = run["interval_sec"]
+    if run["scene_detection"]:
+        step = min(step, run["min_scene_gap_sec"])
+    if step <= 0 or (1 + duration / step) <= cap:
+        return run
+    widened = duration / max(cap - 1, 1)
+    notes = []
+    if run["interval_sec"] < widened:
+        notes.append(f"interval {run['interval_sec']:g}s -> {widened:.1f}s")
+        run["interval_sec"] = widened
+    if run["scene_detection"] and run["min_scene_gap_sec"] < widened:
+        notes.append(f"scene gap {cfg['min_scene_gap_sec']:g}s -> {widened:.1f}s")
+        run["min_scene_gap_sec"] = widened
+    if notes:
+        log(f"max_frames {cap}: " + ", ".join(notes))
+    return run
+
+
+def write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg, requested):
     scene = "on" if cfg["scene_detection"] else "off"
+    interval = f"Frame interval: {cfg['interval_sec']:g}s"
+    if cfg["interval_sec"] != requested["interval_sec"]:
+        interval += (
+            f" (widened from {requested['interval_sec']:g}s "
+            f"for max_frames {requested['max_frames']})"
+        )
+    gap = (
+        f"Scene detection: {scene} (threshold {cfg['scene_threshold']:g}, "
+        f"minimum gap {cfg['min_scene_gap_sec']:g}s)"
+    )
+    if (
+        cfg["scene_detection"]
+        and cfg["min_scene_gap_sec"] != requested["min_scene_gap_sec"]
+    ):
+        gap += f" (widened from {requested['min_scene_gap_sec']:g}s)"
+    if requested["extract_frames"]:
+        frame_line = f"Frames: {len(frames)}"
+        sheet_line = f"Contact sheets: {len(sheets)}"
+        read_line = (
+            "Read transcript.md, then every contact sheet. Open an individual\n"
+            "frame only when a cell is unreadable."
+        )
+    else:
+        frame_line = "Frames: skipped"
+        sheet_line = "Contact sheets: none"
+        read_line = "Read transcript.md. Frames were not extracted."
     lines = [
         f"# {video.name}",
         "",
         f"Duration: {fmt_time(duration)}",
-        f"Frame interval: {cfg['interval_sec']:g}s",
-        f"Scene detection: {scene} (threshold {cfg['scene_threshold']:g}, "
-        f"minimum gap {cfg['min_scene_gap_sec']:g}s)",
-        f"Frames: {len(frames)}",
-        f"Contact sheets: {len(sheets)}",
+        interval,
+        gap,
+        frame_line,
+        sheet_line,
         f"Transcript: transcript.md ({transcript_kind})",
         "",
-        "Read transcript.md, then every contact sheet. Open an individual",
-        "frame only when a cell is unreadable.",
+        read_line,
         "",
         "## Sheets",
         "",
@@ -657,12 +731,21 @@ def process(video, cfg):
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)
         resolve_model(cfg)
-        font_path = resolve_font(cfg)
         duration = duration_seconds(video)
-        frames = extract_frames(video, out_dir / "frames", cfg, font_path)
-        sheets = build_sheets(out_dir, frames, cfg, font_path)
+        if cfg["extract_frames"]:
+            run_cfg = apply_frame_cap(cfg, duration)
+            font_path = resolve_font(run_cfg)
+            frames = extract_frames(video, out_dir / "frames", run_cfg, font_path)
+            sheets = build_sheets(out_dir, frames, run_cfg, font_path)
+        else:
+            run_cfg = cfg
+            log("skipping frames")
+            frames = []
+            sheets = []
         transcript_kind, _detected = transcribe(video, out_dir, cfg)
-        write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg)
+        write_index(
+            out_dir, video, duration, frames, sheets, transcript_kind, run_cfg, cfg
+        )
         manifest = {
             "complete": True,
             "source": source_fp,
@@ -714,6 +797,20 @@ def build_parser():
     parser.add_argument("--sheet-cols", type=int)
     parser.add_argument("--sheet-rows", type=int)
     parser.add_argument("--frame-width", type=int)
+    parser.add_argument(
+        "--prompt",
+        help="Whisper initial prompt for names and terms already known for this video",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        help="cap frames by widening the interval and scene gap; 0 means no cap",
+    )
+    parser.add_argument(
+        "--skip-frames",
+        action="store_true",
+        help="write the transcript only and do not extract frames",
+    )
     parser.add_argument(
         "--keep-audio",
         action=argparse.BooleanOptionalAction,
