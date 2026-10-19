@@ -9,9 +9,11 @@ flags. A flag wins over the file.
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -96,19 +98,57 @@ def log(message):
     print(message, file=sys.stderr, flush=True)
 
 
+CHILDREN = []
+
+
+def stop_children():
+    for proc in list(CHILDREN):
+        if proc.poll() is not None:
+            continue
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def handle_stop(signum, _frame):
+    stop_children()
+    raise SystemExit(128 + signum)
+
+
+def install_stop_handlers():
+    signal.signal(signal.SIGINT, handle_stop)
+    signal.signal(signal.SIGTERM, handle_stop)
+    atexit.register(stop_children)
+
+
 def run(cmd, cwd=None):
-    result = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if result.returncode != 0:
-        tail = "\n".join((result.stderr or "").splitlines()[-40:])
+    CHILDREN.append(proc)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        if proc in CHILDREN:
+            CHILDREN.remove(proc)
+    if proc.returncode != 0:
+        tail = "\n".join((stderr or "").splitlines()[-40:])
         program = Path(str(cmd[0])).name
         raise RuntimeError(f"{program} failed\n{tail}".rstrip())
-    return result
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def whisper_threads(configured):
+    if configured > 0:
+        return configured
+    total = os.cpu_count() or 2
+    return max(1, total // 2)
 
 
 def fingerprint(path):
@@ -314,7 +354,7 @@ def ensure_model(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(".bin.partial")
     log(f"downloading Whisper model to {path}")
-    subprocess.run(
+    run(
         [
             "curl",
             "-L",
@@ -324,8 +364,7 @@ def ensure_model(path):
             "-o",
             str(partial),
             MODEL_URL_BASE + filename,
-        ],
-        check=True,
+        ]
     )
     partial.replace(path)
 
@@ -388,7 +427,7 @@ def extract_frames(video, frames_dir, cfg, font_path):
         )
     else:
         log(f"selecting {cfg['interval_sec']:g}-second frames")
-    result = subprocess.run(
+    result = run(
         [
             "ffmpeg",
             "-hide_banner",
@@ -404,14 +443,8 @@ def extract_frames(video, frames_dir, cfg, font_path):
             "-start_number",
             "1",
             str(frames_dir / "f_%04d.jpg"),
-        ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        ]
     )
-    if result.returncode != 0:
-        tail = "\n".join(result.stderr.splitlines()[-40:])
-        raise RuntimeError(f"ffmpeg frame extract failed\n{tail}")
     times = []
     for line in result.stderr.splitlines():
         if "showinfo" not in line:
@@ -567,7 +600,7 @@ def transcribe(video, out_dir, cfg):
         )
         ensure_model(model_path)
         log(f"transcribing with local Whisper ({model_path.name}, {cfg['language']})")
-        threads = cfg["threads"] or min(8, os.cpu_count() or 4)
+        threads = whisper_threads(cfg["threads"])
         cmd = [
             "whisper-cli",
             "-m",
@@ -843,6 +876,7 @@ def preflight_command():
 
 
 def main(argv=None):
+    install_stop_handlers()
     args = build_parser().parse_args(argv)
     check = subprocess.run(preflight_command(), stderr=subprocess.PIPE, text=True)
     if check.returncode != 0:

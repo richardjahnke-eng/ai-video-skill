@@ -63,7 +63,7 @@ Edit `config.json` in this folder. A command-line flag overrides the file for on
 | `ffmpeg_q` | `3` | ffmpeg still-image quality (`-q:v`). Lower is higher quality. |
 | `model` | `"medium"` | `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large`, or a path to a `.bin` file. |
 | `language` | `"auto"` | A language code such as `en`, or `auto`. `auto` needs a multilingual model. |
-| `threads` | `0` | Whisper threads. `0` uses up to 8 cores. |
+| `threads` | `0` | Whisper threads. `0` uses half of the machine's CPU cores. |
 | `keep_audio` | `false` | Leave the WAV in the output folder. |
 | `font` | `""` | Optional `.ttf` path for timestamps. Empty uses Arial, DejaVu, Liberation, or a built-in bitmap font. |
 | `model_dir` | `""` | Folder for downloaded models. Empty uses `~/.cache/whisper`. |
