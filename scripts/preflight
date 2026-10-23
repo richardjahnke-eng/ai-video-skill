@@ -5,6 +5,18 @@ set -eu
 
 VERSION=1
 STAMP="${XDG_CACHE_HOME:-$HOME/.cache}/analyze-video/preflight.json"
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+
+# An app started from the Dock may not have Homebrew on PATH.
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  for dir in /opt/homebrew/bin /usr/local/bin; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) [ -d "$dir" ] && PATH="$PATH:$dir" ;;
+    esac
+  done
+  export PATH
+fi
 
 platform() {
   os=$(uname -s 2>/dev/null || true)
@@ -31,7 +43,7 @@ hint() {
     mac)
       case "$1" in
         python3) printf '%s\n' "brew install python" ;;
-        Pillow) printf '%s\n' "python3 -m pip install Pillow" ;;
+        Pillow) printf '%s\n' "$ROOT/scripts/setup (it installs Pillow into the skill's own Python)" ;;
         ffmpeg) printf '%s\n' "brew install ffmpeg" ;;
         whisper-cli) printf '%s\n' "brew install whisper.cpp" ;;
         curl) printf '%s\n' "brew install curl" ;;
@@ -99,6 +111,13 @@ hint() {
 }
 
 find_python() {
+  # setup creates this environment. It wins over whatever python3 is on PATH.
+  for venv in "$ROOT/.venv/bin/python" "$ROOT/.venv/Scripts/python.exe"; do
+    if [ -x "$venv" ]; then
+      printf '%s\n' "$venv"
+      return 0
+    fi
+  done
   for candidate in python3 python; do
     command -v "$candidate" >/dev/null 2>&1 || continue
     cand=$(command -v "$candidate")
@@ -170,6 +189,10 @@ fi
 
 if [ -n "$missing" ]; then
   printf 'prerequisite missing:%s\n' "$missing" >&2
+  if [ "$(platform)" = mac ]; then
+    printf '%s\n' "Or run this once in a Terminal, outside any agent sandbox. It installs what is missing:" >&2
+    printf '  %s\n' "\"$ROOT/scripts/setup\"" >&2
+  fi
   exit 1
 fi
 
@@ -183,7 +206,6 @@ import json, os, sys
 from pathlib import Path
 import PIL
 stamp = Path(os.environ["STAMP"])
-stamp.parent.mkdir(parents=True, exist_ok=True)
 data = {
     "version": int(os.environ["VERSION"]),
     "python_version": "%d.%d.%d" % sys.version_info[:3],
@@ -196,6 +218,12 @@ data = {
         "curl": os.path.realpath(os.environ["CURL"]),
     },
 }
-stamp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+# An agent sandbox may not allow writing outside the project. Every program
+# was found, so carry on; preflight checks again next time.
+try:
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+except OSError:
+    pass
 '
 exit 0

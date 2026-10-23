@@ -1,0 +1,144 @@
+#!/bin/sh
+# One-time setup for macOS (Linux works too, without the Homebrew step).
+#
+# Run it in a Terminal, outside any agent sandbox. It needs the network and
+# writes outside the project: Homebrew packages, the skill's own Python
+# environment in .venv/, the Whisper model in ~/.cache/whisper/, and the
+# preflight record in ~/.cache/analyze-video/. After it passes, a normal run
+# only reads those and writes into the open project.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+
+usage() {
+  cat <<'EOF'
+usage: scripts/setup [--yes] [--no-test]
+
+  --yes      install missing Homebrew packages without asking
+  --no-test  skip the self-test at the end
+EOF
+}
+
+YES=0
+TEST=1
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) YES=1 ;;
+    --no-test) TEST=0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '%s\n' "$*"; }
+step() { printf '\n== %s\n' "$*"; }
+
+python_ok() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+OS=$(uname -s 2>/dev/null || true)
+BASE_PY=""
+
+if [ "$OS" = Darwin ]; then
+  for dir in /opt/homebrew/bin /usr/local/bin; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) [ -d "$dir" ] && PATH="$PATH:$dir" ;;
+    esac
+  done
+  export PATH
+
+  step "Programs"
+  if ! command -v brew >/dev/null 2>&1; then
+    say "Homebrew is needed to install ffmpeg and whisper.cpp. Install it from https://brew.sh and run this again."
+    exit 1
+  fi
+  BREW_PREFIX=$(brew --prefix)
+  need=""
+  if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+    need="$need ffmpeg"
+  fi
+  command -v whisper-cli >/dev/null 2>&1 || need="$need whisper.cpp"
+  # Homebrew's Python is preferred. /usr/bin/python3 is only a stub until the
+  # Command Line Tools are installed, and running the stub opens an install dialog.
+  if [ -x "$BREW_PREFIX/bin/python3" ] && python_ok "$BREW_PREFIX/bin/python3"; then
+    BASE_PY="$BREW_PREFIX/bin/python3"
+  elif xcode-select -p >/dev/null 2>&1 && python_ok /usr/bin/python3; then
+    BASE_PY=/usr/bin/python3
+  else
+    need="$need python"
+  fi
+  if [ -n "$need" ]; then
+    if [ "$YES" -ne 1 ]; then
+      printf 'Install with Homebrew now:%s? [y/N] ' "$need"
+      read -r answer || answer=""
+      case "$answer" in
+        y|Y|yes|YES) ;;
+        *) say "Stopped. Install them with: brew install$need"; exit 1 ;;
+      esac
+    fi
+    # shellcheck disable=SC2086
+    brew install $need
+    [ -n "$BASE_PY" ] || BASE_PY="$BREW_PREFIX/bin/python3"
+  fi
+  say "ffmpeg: $(command -v ffmpeg)"
+  say "whisper-cli: $(command -v whisper-cli)"
+else
+  step "Programs"
+  for name in python3 python; do
+    if command -v "$name" >/dev/null 2>&1 && python_ok "$(command -v "$name")"; then
+      BASE_PY=$(command -v "$name")
+      break
+    fi
+  done
+  missing=""
+  [ -n "$BASE_PY" ] || missing="$missing python3"
+  command -v ffmpeg >/dev/null 2>&1 || missing="$missing ffmpeg"
+  command -v ffprobe >/dev/null 2>&1 || missing="$missing ffprobe"
+  command -v whisper-cli >/dev/null 2>&1 || missing="$missing whisper-cli"
+  command -v curl >/dev/null 2>&1 || missing="$missing curl"
+  if [ -n "$missing" ]; then
+    say "Missing:$missing"
+    say "scripts/preflight prints the install command for each one on this system."
+    exit 1
+  fi
+fi
+
+step "Python environment"
+VENV="$ROOT/.venv"
+VENV_PY=""
+for candidate in "$VENV/bin/python" "$VENV/Scripts/python.exe"; do
+  [ -x "$candidate" ] && VENV_PY="$candidate" && break
+done
+if [ -n "$VENV_PY" ] && ! "$VENV_PY" -c 'import sys' >/dev/null 2>&1; then
+  # The Python it was made from is gone, for example after a Homebrew upgrade.
+  say "Rebuilding $VENV: its Python no longer runs."
+  rm -rf -- "$VENV"
+  VENV_PY=""
+fi
+if [ -z "$VENV_PY" ]; then
+  if ! "$BASE_PY" -m venv "$VENV"; then
+    say "Could not create $VENV. On Debian or Ubuntu: sudo apt install python3-venv"
+    exit 1
+  fi
+  for candidate in "$VENV/bin/python" "$VENV/Scripts/python.exe"; do
+    [ -x "$candidate" ] && VENV_PY="$candidate" && break
+  done
+fi
+"$VENV_PY" -m pip install --quiet --disable-pip-version-check --upgrade "Pillow>=9.1"
+say "Python: $VENV_PY ($("$VENV_PY" -c 'import sys, PIL; print("%d.%d.%d" % sys.version_info[:3], "Pillow", PIL.__version__)'))"
+
+step "Preflight"
+"$ROOT/scripts/preflight"
+say "passed"
+
+step "Whisper model"
+ANALYZE_VIDEO_PREFLIGHT=done "$VENV_PY" "$ROOT/scripts/analyze_video.py" --download-model
+
+if [ "$TEST" -eq 1 ]; then
+  step "Self-test"
+  ANALYZE_VIDEO_PREFLIGHT=done "$VENV_PY" "$ROOT/scripts/analyze_video.py" --self-test
+fi
+
+step "Done"
+say "Setup is complete. Agents can now run the skill inside their sandbox."

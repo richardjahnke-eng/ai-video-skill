@@ -10,12 +10,16 @@ flags. A flag wins over the file.
 
 import argparse
 import atexit
+import hashlib
+import html
 import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -39,6 +43,7 @@ MODEL_FILES = {
     "medium.en": "ggml-medium.en.bin",
     "large": "ggml-large-v3.bin",
     "large-v3": "ggml-large-v3.bin",
+    "large-v3-turbo": "ggml-large-v3-turbo.bin",
 }
 MIN_MODEL_BYTES = {
     "tiny": 70_000_000,
@@ -46,6 +51,7 @@ MIN_MODEL_BYTES = {
     "small": 450_000_000,
     "medium": 1_400_000_000,
     "large": 2_800_000_000,
+    "turbo": 1_500_000_000,
 }
 FONT_CANDIDATES = [
     "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -55,8 +61,9 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "C:/Windows/Fonts/arial.ttf",
 ]
+LOCAL_CONFIG_PATH = SKILL_ROOT / "config.local.json"
 DEFAULTS = {
-    "interval_sec": 5,
+    "interval_sec": 30,
     "scene_threshold": 0.2,
     "min_scene_gap_sec": 1,
     "scene_detection": True,
@@ -68,15 +75,17 @@ DEFAULTS = {
     "label_height": 36,
     "jpeg_quality": 85,
     "ffmpeg_q": 3,
-    "model": "medium",
+    "model": "large-v3-turbo",
     "language": "auto",
     "threads": 0,
     "keep_audio": False,
     "font": "",
     "model_dir": "",
     "initial_prompt": "",
-    "max_frames": 0,
+    "max_frames": 96,
     "extract_frames": True,
+    "output_root": "",
+    "sidecar_transcript": True,
 }
 SETTING_KEYS = (
     "interval_sec",
@@ -94,7 +103,16 @@ SETTING_KEYS = (
     "initial_prompt",
     "max_frames",
     "extract_frames",
+    "sidecar_transcript",
 )
+# macOS sets this flag on an iCloud file whose contents are not on disk yet.
+SF_DATALESS = 0x40000000
+VTT_TIME_RE = re.compile(
+    r"^((?:\d+:)?\d{1,2}:\d{2}[.,]\d{3})\s+-->\s+((?:\d+:)?\d{1,2}:\d{2}[.,]\d{3})"
+)
+VTT_VOICE_RE = re.compile(r"<v(?:\.[^\s>]*)?\s+([^>]+)>")
+VTT_TAG_RE = re.compile(r"<[^>]+>")
+ZOOM_CLOUD_RE = re.compile(r"^(GMT\d{8}-\d{6})_Recording")
 PTS_RE = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
 # A lock with no PID yet is normal for a moment after it is created.
 EMPTY_LOCK_GRACE_SEC = 60
@@ -218,6 +236,14 @@ def load_config(path):
     cfg = dict(DEFAULTS)
     if path is None:
         return cfg
+    cfg.update(read_config(path))
+    # Personal overrides that survive an update of the skill folder.
+    if path == DEFAULT_CONFIG_PATH and LOCAL_CONFIG_PATH.is_file():
+        cfg.update(read_config(LOCAL_CONFIG_PATH))
+    return cfg
+
+
+def read_config(path):
     if not path.is_file():
         raise RuntimeError(f"config not found: {path}")
     try:
@@ -229,10 +255,9 @@ def load_config(path):
     unknown = sorted(set(data) - set(DEFAULTS))
     if unknown:
         raise RuntimeError(
-            "unknown config keys: " + ", ".join(unknown)
+            f"unknown config keys in {path.name}: " + ", ".join(unknown)
         )
-    cfg.update(data)
-    return cfg
+    return data
 
 
 def apply_cli(cfg, args):
@@ -260,6 +285,10 @@ def apply_cli(cfg, args):
         cfg["max_frames"] = args.max_frames
     if args.skip_frames:
         cfg["extract_frames"] = False
+    if args.output_root is not None:
+        cfg["output_root"] = args.output_root
+    if args.whisper:
+        cfg["sidecar_transcript"] = False
     return cfg
 
 
@@ -290,6 +319,8 @@ def normalize(cfg):
     cfg["initial_prompt"] = str(cfg["initial_prompt"]).strip()
     cfg["max_frames"] = as_number(cfg["max_frames"], "max_frames", int)
     cfg["extract_frames"] = as_bool(cfg["extract_frames"], "extract_frames")
+    cfg["output_root"] = str(cfg["output_root"]).strip()
+    cfg["sidecar_transcript"] = as_bool(cfg["sidecar_transcript"], "sidecar_transcript")
     if cfg["interval_sec"] <= 0:
         raise RuntimeError("interval_sec must be greater than 0")
     if not 0 <= cfg["scene_threshold"] <= 1:
@@ -319,6 +350,8 @@ def settings_snapshot(cfg):
 
 def model_family(name):
     base = name[:-3] if name.endswith(".en") else name
+    if base.endswith("turbo"):
+        return "turbo"
     if base.startswith("large"):
         return "large"
     return base
@@ -367,7 +400,13 @@ def min_model_bytes(path):
     return MIN_MODEL_BYTES.get(model_family(stem), 1_000_000)
 
 
-def ensure_model(path):
+def setup_command():
+    if os.name == "nt":
+        return "the same command once in a PowerShell window outside the agent"
+    return f'"{SKILL_ROOT / "scripts" / "setup"}" in a Terminal'
+
+
+def ensure_model(path, show_progress=False):
     minimum = min_model_bytes(path)
     if path.is_file() and path.stat().st_size >= minimum:
         return
@@ -381,18 +420,29 @@ def ensure_model(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(".bin.partial")
     log(f"downloading Whisper model to {path}")
-    run(
-        [
-            tool("curl"),
-            "-L",
-            "--fail",
-            "--continue-at",
-            "-",
-            "-o",
-            str(partial),
-            MODEL_URL_BASE + filename,
-        ]
-    )
+    cmd = [
+        tool("curl"),
+        "-L",
+        "--fail",
+        "--continue-at",
+        "-",
+        "-o",
+        str(partial),
+        MODEL_URL_BASE + filename,
+    ]
+    try:
+        if show_progress:
+            if subprocess.run(cmd).returncode != 0:
+                raise RuntimeError("curl failed")
+        else:
+            run(cmd)
+    except (OSError, RuntimeError) as exc:
+        # An agent sandbox (Cursor, Codex) blocks the network and writes outside
+        # the project, so the one-time download belongs to setup.
+        raise RuntimeError(
+            f"could not download the Whisper model to {path}: {exc}\n"
+            f"If this ran inside an agent sandbox, run {setup_command()} first."
+        ) from exc
     partial.replace(path)
 
 
@@ -626,8 +676,82 @@ def parse_transcript(payload):
     return rows, detected
 
 
-def transcribe(video, out_dir, cfg):
+def find_sidecar_transcript(video):
+    """A transcript the meeting tool already wrote next to the recording.
+
+    Zoom cloud recordings download as GMT<date>-<time>_Recording_<size>.mp4 with
+    GMT<date>-<time>_Recording.transcript.vtt. Teams and others use <name>.vtt.
+    """
+    names = [f"{video.stem}.vtt", f"{video.stem}.transcript.vtt"]
+    match = ZOOM_CLOUD_RE.match(video.stem)
+    if match:
+        names.append(f"{match.group(1)}_Recording.transcript.vtt")
+    for name in names:
+        candidate = video.parent / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def vtt_time(text):
+    parts = text.replace(",", ".").split(":")
+    if len(parts) == 2:
+        parts.insert(0, "0")
+    hours, minutes, seconds = parts
+    return f"{int(hours):02d}:{int(minutes):02d}:{seconds.zfill(6)}"
+
+
+def parse_vtt(text):
+    """Cues as (start, end, text). Speaker names stay with the text.
+
+    Zoom writes "Name: words". Teams writes <v Name>words</v>, which becomes the same.
+    """
+    text = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n")
+    rows = []
+    for block in re.split(r"\n\s*\n", text):
+        lines = [line.strip() for line in block.split("\n") if line.strip()]
+        for index, line in enumerate(lines):
+            match = VTT_TIME_RE.match(line)
+            if match:
+                break
+        else:
+            continue
+        body = " ".join(lines[index + 1 :])
+        voice = VTT_VOICE_RE.search(body)
+        body = html.unescape(VTT_TAG_RE.sub("", body)).strip()
+        if voice and body:
+            body = f"{voice.group(1).strip()}: {body}"
+        if body:
+            rows.append((vtt_time(match.group(1)), vtt_time(match.group(2)), body))
+    return rows
+
+
+def transcript_from_vtt(vtt, out_dir):
+    rows = parse_vtt(vtt.read_text(encoding="utf-8", errors="replace"))
+    if not rows:
+        raise RuntimeError(
+            f"{vtt.name} has no transcript cues. Pass --whisper to transcribe locally."
+        )
+    # A Whisper run from an earlier setting would otherwise sit next to this one.
+    (out_dir / "transcript.json").unlink(missing_ok=True)
+    lines = [
+        "# Transcript",
+        "",
+        f"From {vtt.name}, the transcript saved with the recording.",
+        "Speaker names, where present, come from that file.",
+        "",
+    ]
+    lines.extend(f"[{start} --> {end}] {text}" for start, end, text in rows)
+    lines.append("")
+    (out_dir / "transcript.md").write_text("\n".join(lines), encoding="utf-8")
+    return f"vtt:{vtt.name}"
+
+
+def transcribe(video, out_dir, cfg, sidecar=None):
     transcript_md = out_dir / "transcript.md"
+    if sidecar:
+        log(f"using the transcript saved with the recording: {sidecar.name}")
+        return transcript_from_vtt(sidecar, out_dir), ""
     if not has_audio(video):
         transcript_md.write_text(
             "This recording has no audio track.\n", encoding="utf-8"
@@ -882,14 +1006,106 @@ def acquire_lock(lock_path, video):
     raise RuntimeError(f"could not take the lock {lock_path}")
 
 
-def process(video, cfg):
+def slug(text):
+    """ASCII folder name: safe in any console, shell, or agent path."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-.")
+    return text[:80] or "recording"
+
+
+def output_root(cfg):
+    """Where _video/ goes. Empty means the current directory: the open project.
+
+    An agent sandbox lets a command write inside the project, and a meeting
+    transcript does not belong next to a recording on a shared drive.
+    """
+    value = cfg["output_root"]
+    if value == "beside":
+        return None
+    return Path(value).expanduser().resolve() if value else Path.cwd()
+
+
+def output_dir(video, cfg):
+    root = output_root(cfg)
+    name = f"{slug(video.stem)}-{slug(video.suffix.lstrip('.').lower()) or 'file'}"
+    if root is None:
+        return video.parent / "_video" / name
+    # Meeting tools reuse names such as zoom_0.mp4 in every meeting folder.
+    out_dir = root / "_video" / f"{slug(video.parent.name)}--{name}"
+    manifest = out_dir / "manifest.json"
+    try:
+        owner = json.loads(manifest.read_text(encoding="utf-8"))["source"]["source"]
+    except (OSError, ValueError, KeyError, TypeError):
+        owner = None
+    if owner and owner != str(video):
+        digest = hashlib.sha1(str(video).encode("utf-8")).hexdigest()[:8]
+        out_dir = out_dir.with_name(f"{out_dir.name}-{digest}")
+    return out_dir
+
+
+def keep_out_of_git(video_root):
+    """Add _video/ to this repository's local exclude file, once.
+
+    .git/info/exclude is not committed, so the team's .gitignore stays as it is.
+    """
+    git = shutil.which("git")
+    if not git or not video_root.is_dir():
+        return
+
+    def git_out(*args):
+        return subprocess.run(
+            [git, "-C", str(video_root.parent), *args], capture_output=True, text=True
+        )
+
+    if git_out("rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+        return
+    if git_out("check-ignore", "-q", str(video_root)).returncode == 0:
+        return
+    exclude = git_out("rev-parse", "--git-path", "info/exclude").stdout.strip()
+    if not exclude:
+        return
+    exclude = Path(exclude)
+    if not exclude.is_absolute():
+        exclude = video_root.parent / exclude
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+        with exclude.open("a", encoding="utf-8") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write("# analyze-video output: meeting transcripts and frames\n_video/\n")
+        log(f"added _video/ to {exclude} so the output stays out of git")
+    except OSError as exc:
+        log(f"warning: could not add _video/ to {exclude} ({exc}). Ignore _video/ before committing.")
+
+
+def warn_if_in_icloud(video):
+    if getattr(video.stat(), "st_flags", 0) & SF_DATALESS:
+        log(
+            f"{video.name} is in iCloud and not downloaded yet. Reading it downloads "
+            "it first, which can take a while. If that fails, download it in Finder "
+            "(right-click, Download Now) and run again."
+        )
+
+
+def process(video, cfg, transcript=None):
     video = find_video(video)
-    if video.parent.name == "_video":
+    if "_video" in video.parent.parts:
         raise RuntimeError(f"refusing to process a file already under _video: {video}")
-    out_dir = video.parent / "_video" / video.stem
+    warn_if_in_icloud(video)
+    out_dir = output_dir(video, cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
+    keep_out_of_git(out_dir.parent)
+    sidecar = None
+    if transcript is not None:
+        sidecar = transcript.expanduser().resolve()
+        if not sidecar.is_file():
+            raise RuntimeError(f"transcript not found: {sidecar}")
+    elif cfg["sidecar_transcript"]:
+        sidecar = find_sidecar_transcript(video)
     source_fp = fingerprint(video)
     settings = settings_snapshot(cfg)
+    settings["transcript_file"] = fingerprint(sidecar) if sidecar else None
     manifest_path = out_dir / "manifest.json"
     if already_done(manifest_path, source_fp, settings):
         print(f"already processed: {out_dir / 'index.md'}")
@@ -916,7 +1132,7 @@ def process(video, cfg):
             font_path = resolve_font(run_cfg)
             frames = extract_frames(video, out_dir / "frames", run_cfg, font_path)
             sheets = build_sheets(out_dir, frames, run_cfg, font_path)
-        transcript_kind, _detected = transcribe(video, out_dir, cfg)
+        transcript_kind, _detected = transcribe(video, out_dir, cfg, sidecar)
         write_index(
             out_dir,
             video,
@@ -936,7 +1152,9 @@ def process(video, cfg):
             "frame_count": len(frames),
             "sheet_count": len(sheets),
             "transcript": transcript_kind,
-            "model": str(resolve_model(cfg)) if transcript_kind != "no-audio" else "",
+            "model": ""
+            if transcript_kind == "no-audio" or sidecar
+            else str(resolve_model(cfg)),
             "processed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "frames": [
                 {"file": frame["file"], "t": fmt_time(frame["t"])} for frame in frames
@@ -955,7 +1173,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Create contact sheets and a local transcript for one video."
     )
-    parser.add_argument("video", type=Path, help="path to the video file")
+    parser.add_argument("video", type=Path, nargs="?", help="path to the video file")
     parser.add_argument(
         "--config",
         type=Path,
@@ -999,7 +1217,66 @@ def build_parser():
         default=None,
         help="keep or delete the extracted WAV",
     )
+    parser.add_argument(
+        "--output-root",
+        help="folder that gets _video/ (default: the current directory); 'beside' puts it next to the video",
+    )
+    parser.add_argument(
+        "--transcript",
+        type=Path,
+        help="use this .vtt transcript instead of Whisper",
+    )
+    parser.add_argument(
+        "--whisper",
+        action="store_true",
+        help="transcribe with Whisper even when a .vtt sits next to the video",
+    )
+    parser.add_argument(
+        "--download-model",
+        action="store_true",
+        help="download the configured Whisper model and exit (setup uses this)",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="run the whole pipeline on a short generated clip and exit",
+    )
     return parser
+
+
+def self_test(cfg):
+    """Prove ffmpeg, Pillow, whisper-cli, and the model work together."""
+    with tempfile.TemporaryDirectory(prefix="analyze-video-") as tmp:
+        clip = Path(tmp) / "self-test.mp4"
+        run(
+            [
+                tool("ffmpeg"),
+                "-hide_banner",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=25:duration=6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=6",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(clip),
+            ]
+        )
+        cfg = dict(cfg, output_root=tmp, sidecar_transcript=False, max_frames=0)
+        process(clip, cfg)
+        out_dir = output_dir(clip.resolve(), cfg)
+        manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+        print(
+            f"self-test passed: frames {manifest['frame_count']}, "
+            f"sheets {manifest['sheet_count']}, transcript by {manifest['transcript']}"
+        )
 
 
 def resolve_config_path(arg):
@@ -1043,7 +1320,15 @@ def main(argv=None):
     load_tool_paths()
     try:
         cfg = normalize(apply_cli(load_config(resolve_config_path(args.config)), args))
-        process(args.video, cfg)
+        if args.download_model:
+            ensure_model(resolve_model(cfg), show_progress=True)
+            print(f"model ready: {resolve_model(cfg)}")
+        elif args.self_test:
+            self_test(cfg)
+        elif args.video is None:
+            build_parser().error("give a video file")
+        else:
+            process(args.video, cfg, args.transcript)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -1,0 +1,141 @@
+#!/bin/sh
+# Install or update the skill as one user-level copy, then run setup.
+#
+# The copy goes to ~/.claude/skills/analyze-video/. Claude Code reads that
+# folder, and Cursor reads it too, so one copy serves both. Run it again to
+# update: a git checkout pulls, a copied folder is replaced from --from.
+# config.local.json and the .venv/ environment are kept across updates.
+set -eu
+SELF_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+DEST="${ANALYZE_VIDEO_DEST:-$HOME/.claude/skills/analyze-video}"
+
+usage() {
+  cat <<'EOF'
+usage: scripts/install [--from <git URL | folder | .zip>] [--dest <folder>] [--yes] [--no-test]
+
+  --from     where the skill comes from (default: the folder this script is in)
+  --dest     where it goes (default: ~/.claude/skills/analyze-video)
+  --yes      passed to setup: install missing Homebrew packages without asking
+  --no-test  passed to setup: skip the self-test
+
+Examples:
+  git clone <repo URL> ~/.claude/skills/analyze-video
+  ~/.claude/skills/analyze-video/scripts/install --yes      # install, later: update
+
+  scripts/install --from ~/Downloads/ai-video-skill-main.zip --yes
+EOF
+}
+
+FROM=""
+SETUP_ARGS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from) FROM=${2:?--from needs a value}; shift 2 ;;
+    --dest) DEST=${2:?--dest needs a value}; shift 2 ;;
+    --yes|-y) SETUP_ARGS="$SETUP_ARGS --yes"; shift ;;
+    --no-test) SETUP_ARGS="$SETUP_ARGS --no-test"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '%s\n' "$*"; }
+
+case "$DEST" in
+  ""|/|"$HOME"|"$HOME/") say "refusing to install into $DEST"; exit 2 ;;
+esac
+
+is_url() {
+  case "$1" in
+    *://*|git@*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+TMP=""
+cleanup() {
+  # An if, not &&: the trap's status would become the script's exit status.
+  if [ -n "$TMP" ]; then rm -rf -- "$TMP"; fi
+}
+trap cleanup EXIT
+
+# Copy a skill folder into DEST, keeping the local settings and environment.
+place_copy() {
+  src=$1
+  [ -f "$src/SKILL.md" ] || { say "$src does not look like the skill (no SKILL.md)"; exit 1; }
+  parent=$(dirname -- "$DEST")
+  mkdir -p -- "$parent"
+  stage="$DEST.new.$$"
+  mkdir -- "$stage"
+  (cd -- "$src" && tar cf - --exclude=.git --exclude=.venv --exclude=_video \
+    --exclude=config.local.json --exclude=__pycache__ .) | (cd -- "$stage" && tar xf -)
+  if [ -d "$DEST" ]; then
+    for keep in config.local.json .venv; do
+      [ -e "$DEST/$keep" ] && mv -- "$DEST/$keep" "$stage/$keep"
+    done
+    old="$DEST.old.$$"
+    mv -- "$DEST" "$old"
+    mv -- "$stage" "$DEST"
+    rm -rf -- "$old"
+  else
+    mv -- "$stage" "$DEST"
+  fi
+  chmod +x "$DEST/scripts/analyze_video" "$DEST/scripts/preflight" \
+    "$DEST/scripts/setup" "$DEST/scripts/install" "$DEST/scripts/analyze_video.py"
+}
+
+# The whole run is one function, so the shell has read all of it before a
+# git pull below can rewrite this file.
+main() {
+  if [ -z "$FROM" ] && [ -d "$DEST/.git" ]; then
+    say "Updating the git checkout in $DEST"
+    git -C "$DEST" pull --ff-only
+  elif [ -z "$FROM" ] && [ "$(CDPATH= cd -- "$DEST" 2>/dev/null && pwd || true)" = "$SELF_ROOT" ]; then
+    say "The skill is already at $DEST"
+  elif [ -n "$FROM" ] && is_url "$FROM"; then
+    if [ -d "$DEST/.git" ]; then
+      say "Updating the git checkout in $DEST"
+      git -C "$DEST" pull --ff-only
+    elif [ -e "$DEST" ]; then
+      say "$DEST exists and is not a git checkout. Move it away, or install with --from <folder or zip>."
+      exit 1
+    else
+      mkdir -p -- "$(dirname -- "$DEST")"
+      git clone "$FROM" "$DEST"
+    fi
+  else
+    src=${FROM:-$SELF_ROOT}
+    case "$src" in
+      *.zip)
+        [ -f "$src" ] || { say "zip not found: $src"; exit 1; }
+        TMP=$(mktemp -d)
+        unzip -q "$src" -d "$TMP"
+        found=$(find "$TMP" -maxdepth 3 -name SKILL.md -print | head -n 1)
+        [ -n "$found" ] || { say "no SKILL.md inside $src"; exit 1; }
+        src=$(dirname -- "$found")
+        ;;
+    esac
+    [ -d "$src" ] || { say "not a folder: $src"; exit 1; }
+    say "Copying the skill from $src to $DEST"
+    place_copy "$src"
+  fi
+
+  # Cursor reads all of these. A second copy shows the skill twice.
+  for other in "$HOME/.cursor/skills/analyze-video" "$HOME/.agents/skills/analyze-video" \
+    "$HOME/.codex/skills/analyze-video"; do
+    if [ -e "$other" ] && [ "$other" != "$DEST" ]; then
+      say "Note: another copy is at $other. Cursor will list the skill twice; remove one of them."
+    fi
+  done
+
+  # shellcheck disable=SC2086
+  "$DEST/scripts/setup" $SETUP_ARGS
+
+  say ""
+  say "Installed at $DEST"
+  say "Version: $(sed -n 's/^Version \(.*\)\.$/\1/p' "$DEST/README.md" | head -n 1)"
+  say "Start a new chat in Cursor or Claude Code to pick it up."
+}
+
+main
+exit $?

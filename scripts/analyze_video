@@ -2,7 +2,25 @@
 # Entry point. preflight is silent once this machine has passed.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+
+# An app started from the Dock may not have Homebrew on PATH.
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  for dir in /opt/homebrew/bin /usr/local/bin; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) [ -d "$dir" ] && PATH="$PATH:$dir" ;;
+    esac
+  done
+  export PATH
+fi
+
 "$ROOT/scripts/preflight"
-# Same order as preflight's find_python, which may have accepted plain python.
-PY=$(command -v python3 || command -v python)
+# Same order as preflight's find_python: setup's environment first.
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+elif [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
+  PY="$ROOT/.venv/Scripts/python.exe"
+else
+  PY=$(command -v python3 || command -v python)
+fi
 ANALYZE_VIDEO_PREFLIGHT=done exec "$PY" "$ROOT/scripts/analyze_video.py" "$@"

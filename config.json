@@ -1,5 +1,5 @@
 {
-  "interval_sec": 5,
+  "interval_sec": 30,
   "scene_threshold": 0.2,
   "min_scene_gap_sec": 1,
   "scene_detection": true,
@@ -11,13 +11,15 @@
   "label_height": 36,
   "jpeg_quality": 85,
   "ffmpeg_q": 3,
-  "model": "medium",
+  "model": "large-v3-turbo",
   "language": "auto",
   "threads": 0,
   "keep_audio": false,
   "font": "",
   "model_dir": "",
   "initial_prompt": "",
-  "max_frames": 0,
-  "extract_frames": true
+  "max_frames": 96,
+  "extract_frames": true,
+  "output_root": "",
+  "sidecar_transcript": true
 }
