@@ -12,7 +12,7 @@ function Get-Hint([string]$Name) {
         "python3" { "winget install --id Python.Python.3.12 -e" }
         "Pillow" { "py -3 -m pip install Pillow" }
         "ffmpeg" { "winget install --id Gyan.FFmpeg -e" }
-        "whisper-cli" { "No winget package. Build https://github.com/ggml-org/whisper.cpp and put whisper-cli.exe on PATH." }
+        "whisper-cli" { "Download whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases, unzip it, and put the folder that holds whisper-cli.exe on PATH." }
         "curl" { "Install curl.exe and put it on PATH" }
         default { "Install $Name and rerun" }
     }
@@ -27,7 +27,8 @@ function Find-Python {
         }
     }
     foreach ($name in @("python3", "python")) {
-        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
         if (-not $cmd) { continue }
         & $cmd.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" 2>$null
         if ($LASTEXITCODE -eq 0) { return $cmd.Source }
@@ -36,7 +37,10 @@ function Find-Python {
 }
 
 function Find-Tool([string]$Name) {
-    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    # Programs only. Windows PowerShell 5.1 makes curl an alias for Invoke-WebRequest,
+    # and an alias has no path, so curl.exe would look missing.
+    $cmd = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     if ($cmd) { return $cmd.Source }
     return $null
 }
@@ -45,7 +49,9 @@ $Python = Find-Python
 if ((Test-Path -LiteralPath $Stamp) -and $Python) {
     $env:STAMP = $Stamp
     $env:VERSION = "$Version"
-    & $Python -c @'
+    # The code goes to Python on stdin. Windows PowerShell 5.1 strips the double
+    # quotes inside a native argument, which breaks python -c.
+    @'
 import json, os, sys
 from pathlib import Path
 stamp = Path(os.environ["STAMP"])
@@ -68,7 +74,7 @@ try:
     import PIL
 except ImportError:
     raise SystemExit(1)
-'@
+'@ | & $Python -
     if ($LASTEXITCODE -eq 0) { exit 0 }
 }
 
@@ -122,7 +128,7 @@ $env:FFMPEG = $Ffmpeg
 $env:FFPROBE = $Ffprobe
 $env:WHISPER = $Whisper
 $env:CURL = $Curl
-& $Python -c @'
+@'
 import json, os, sys
 from pathlib import Path
 import PIL
@@ -141,5 +147,6 @@ data = {
     },
 }
 stamp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-'@
+'@ | & $Python -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 exit 0

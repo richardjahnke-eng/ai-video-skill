@@ -24,8 +24,12 @@ macOS and Linux:
 Windows:
 
 ```powershell
-powershell -NoProfile -File \absolute\path\to\analyze-video\scripts\analyze_video.ps1 "C:\path\to\video.mp4"
+powershell -NoProfile -ExecutionPolicy Bypass -File \absolute\path\to\analyze-video\scripts\analyze_video.ps1 "C:\path\to\video.mp4"
 ```
+
+Take the video path from a directory listing and pass it exactly as listed. Recording names can hold characters that look like a plain space but are not one.
+
+An audio-only file (such as Zoom's `.m4a`) works too. It gets a transcript and no sheets.
 
 The script writes `<video folder>/_video/<recording name>/`:
 

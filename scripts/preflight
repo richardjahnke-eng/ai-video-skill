@@ -33,7 +33,7 @@ hint() {
         python3) printf '%s\n' "brew install python" ;;
         Pillow) printf '%s\n' "python3 -m pip install Pillow" ;;
         ffmpeg) printf '%s\n' "brew install ffmpeg" ;;
-        whisper-cli) printf '%s\n' "brew install whisper-cpp" ;;
+        whisper-cli) printf '%s\n' "brew install whisper.cpp" ;;
         curl) printf '%s\n' "brew install curl" ;;
       esac
       ;;
@@ -82,7 +82,7 @@ hint() {
         python3) printf '%s\n' "winget install --id Python.Python.3.12 -e" ;;
         Pillow) printf '%s\n' "py -3 -m pip install Pillow" ;;
         ffmpeg) printf '%s\n' "winget install --id Gyan.FFmpeg -e" ;;
-        whisper-cli) printf '%s\n' "No winget package. Build https://github.com/ggml-org/whisper.cpp and put whisper-cli.exe on PATH." ;;
+        whisper-cli) printf '%s\n' "Download whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases, unzip it, and put the folder that holds whisper-cli.exe on PATH." ;;
         curl) printf '%s\n' "Install curl.exe and put it on PATH" ;;
       esac
       ;;

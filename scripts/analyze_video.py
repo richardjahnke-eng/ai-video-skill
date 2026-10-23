@@ -16,11 +16,15 @@ import re
 import signal
 import subprocess
 import sys
+import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+# Image.Resampling arrived in Pillow 9.1. Older Pillow keeps the names on Image.
+LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = SKILL_ROOT / "config.json"
 MODEL_URL_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
@@ -92,10 +96,33 @@ SETTING_KEYS = (
     "extract_frames",
 )
 PTS_RE = re.compile(r"pts_time:([0-9]+(?:\.[0-9]+)?)")
+# A lock with no PID yet is normal for a moment after it is created.
+EMPTY_LOCK_GRACE_SEC = 60
+TOOL_PATHS = {}
 
 
 def log(message):
     print(message, file=sys.stderr, flush=True)
+
+
+def cache_dir():
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "analyze-video"
+
+
+def load_tool_paths():
+    """Use the programs preflight checked, not whatever is first on PATH now."""
+    try:
+        data = json.loads((cache_dir() / "preflight.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    for name, path in (data.get("tools") or {}).items():
+        if path and os.access(path, os.X_OK):
+            TOOL_PATHS[name] = path
+
+
+def tool(name):
+    return TOOL_PATHS.get(name, name)
 
 
 CHILDREN = []
@@ -356,7 +383,7 @@ def ensure_model(path):
     log(f"downloading Whisper model to {path}")
     run(
         [
-            "curl",
+            tool("curl"),
             "-L",
             "--fail",
             "--continue-at",
@@ -427,24 +454,34 @@ def extract_frames(video, frames_dir, cfg, font_path):
         )
     else:
         log(f"selecting {cfg['interval_sec']:g}-second frames")
-    result = run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-y",
-            "-i",
-            str(video),
-            "-vf",
-            select_filter(cfg),
-            "-fps_mode",
-            "vfr",
-            "-q:v",
-            str(cfg["ffmpeg_q"]),
-            "-start_number",
-            "1",
-            str(frames_dir / "f_%04d.jpg"),
-        ]
-    )
+
+    def select(sync_option):
+        return run(
+            [
+                tool("ffmpeg"),
+                "-hide_banner",
+                "-y",
+                "-i",
+                str(video),
+                "-vf",
+                select_filter(cfg),
+                sync_option,
+                "vfr",
+                "-q:v",
+                str(cfg["ffmpeg_q"]),
+                "-start_number",
+                "1",
+                str(frames_dir / "f_%04d.jpg"),
+            ]
+        )
+
+    try:
+        result = select("-fps_mode")
+    except RuntimeError as exc:
+        # ffmpeg before 5.1 has no -fps_mode. -vsync is the older name.
+        if "fps_mode" not in str(exc):
+            raise
+        result = select("-vsync")
     times = []
     for line in result.stderr.splitlines():
         if "showinfo" not in line:
@@ -493,7 +530,7 @@ def build_sheets(out_dir, frames, cfg, font_path):
             y = row * (cell_h + label_h)
             with Image.open(out_dir / frame["file"]) as image:
                 fitted = image.convert("RGB")
-                fitted.thumbnail((cell_w, cell_h), Image.Resampling.LANCZOS)
+                fitted.thumbnail((cell_w, cell_h), LANCZOS)
                 pad_x = x + (cell_w - fitted.width) // 2
                 pad_y = y + (cell_h - fitted.height) // 2
                 canvas.paste(fitted, (pad_x, pad_y))
@@ -518,38 +555,57 @@ def build_sheets(out_dir, frames, cfg, font_path):
     return sheets
 
 
-def has_audio(video):
+def probe(video, *args):
     result = run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index",
-            "-of",
-            "csv=p=0",
-            str(video),
-        ]
+        [tool("ffprobe"), "-v", "error", *args, "-of", "csv=p=0", str(video)]
     )
-    return bool(result.stdout.strip())
+    return result.stdout
+
+
+def has_audio(video):
+    return bool(probe(video, "-select_streams", "a", "-show_entries", "stream=index").strip())
+
+
+def has_video(video):
+    # V (capital) skips cover art, which audio files such as .m4a carry as a picture stream.
+    return bool(probe(video, "-select_streams", "V", "-show_entries", "stream=index").strip())
+
+
+def positive_floats(text):
+    values = []
+    for field in text.replace(",", "\n").split():
+        try:
+            value = float(field)
+        except ValueError:
+            continue
+        if value > 0:
+            values.append(value)
+    return values
 
 
 def duration_seconds(video):
-    result = run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-            str(video),
-        ]
-    )
-    return float(result.stdout.strip())
+    # Recordings written as a stream, such as a browser's MediaRecorder .webm,
+    # often store no duration at all. ffprobe prints N/A for those.
+    for entry in ("format=duration", "stream=duration"):
+        values = positive_floats(probe(video, "-show_entries", entry))
+        if values:
+            return max(values)
+    log("the file stores no duration; reading packet times instead")
+    end = 0.0
+    for line in probe(video, "-show_entries", "packet=pts_time,duration_time").splitlines():
+        fields = line.split(",")
+        try:
+            pts = float(fields[0])
+        except (IndexError, ValueError):
+            continue
+        try:
+            pts += float(fields[1])
+        except (IndexError, ValueError):
+            pass
+        end = max(end, pts)
+    if end > 0:
+        return end
+    raise RuntimeError(f"could not read the duration of {video.name}")
 
 
 def parse_transcript(payload):
@@ -583,7 +639,7 @@ def transcribe(video, out_dir, cfg):
         log("extracting audio")
         run(
             [
-                "ffmpeg",
+                tool("ffmpeg"),
                 "-hide_banner",
                 "-y",
                 "-i",
@@ -602,7 +658,7 @@ def transcribe(video, out_dir, cfg):
         log(f"transcribing with local Whisper ({model_path.name}, {cfg['language']})")
         threads = whisper_threads(cfg["threads"])
         cmd = [
-            "whisper-cli",
+            tool("whisper-cli"),
             "-m",
             str(model_path),
             "-f",
@@ -678,7 +734,9 @@ def apply_frame_cap(cfg, duration):
     return run
 
 
-def write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg, requested):
+def write_index(
+    out_dir, video, duration, frames, sheets, transcript_kind, cfg, requested, skip_reason
+):
     scene = "on" if cfg["scene_detection"] else "off"
     interval = f"Frame interval: {cfg['interval_sec']:g}s"
     if cfg["interval_sec"] != requested["interval_sec"]:
@@ -695,7 +753,7 @@ def write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg, 
         and cfg["min_scene_gap_sec"] != requested["min_scene_gap_sec"]
     ):
         gap += f" (widened from {requested['min_scene_gap_sec']:g}s)"
-    if requested["extract_frames"]:
+    if not skip_reason:
         frame_line = f"Frames: {len(frames)}"
         sheet_line = f"Contact sheets: {len(sheets)}"
         read_line = (
@@ -703,7 +761,7 @@ def write_index(out_dir, video, duration, frames, sheets, transcript_kind, cfg, 
             "frame only when a cell is unreadable."
         )
     else:
-        frame_line = "Frames: skipped"
+        frame_line = f"Frames: skipped ({skip_reason})"
         sheet_line = "Contact sheets: none"
         read_line = "Read transcript.md. Frames were not extracted."
     lines = [
@@ -741,10 +799,91 @@ def already_done(manifest_path, source_fp, settings):
     )
 
 
+def loose_name(name):
+    # macOS puts U+202F (narrow no-break space) before AM/PM in screen-recording
+    # names. An agent that retypes the path types a plain space instead.
+    name = unicodedata.normalize("NFC", name)
+    return " ".join(name.split())
+
+
+def find_video(path):
+    path = path.expanduser()
+    if path.is_file():
+        return path.resolve()
+    parent = path.parent
+    if parent.is_dir():
+        wanted = loose_name(path.name)
+        matches = [
+            entry
+            for entry in parent.iterdir()
+            if entry.is_file() and loose_name(entry.name) == wanted
+        ]
+        if len(matches) == 1:
+            log(f"using {matches[0].name!r}; the name differs only in spacing")
+            return matches[0].resolve()
+    raise RuntimeError(f"video not found: {path}")
+
+
+def pid_alive(pid):
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # On Windows, signal 0 is CTRL_C_EVENT, so os.kill(pid, 0) would interrupt
+        # the other run instead of checking it. Ask the kernel instead.
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lock_is_stale(lock_path):
+    try:
+        text = lock_path.read_text(encoding="utf-8").strip()
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return False
+    if not text:
+        return age > EMPTY_LOCK_GRACE_SEC
+    if not text.isdigit():
+        return True
+    return not pid_alive(int(text))
+
+
+def acquire_lock(lock_path, video):
+    """A run that was killed (agent timeout, closed terminal) leaves its lock behind."""
+    for _attempt in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if lock_is_stale(lock_path):
+                log("removing the lock left by a run that stopped")
+                lock_path.unlink(missing_ok=True)
+                continue
+            raise RuntimeError(
+                f"processing already running for {video.name}. "
+                f"If no run is active, delete {lock_path}"
+            )
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return
+    raise RuntimeError(f"could not take the lock {lock_path}")
+
+
 def process(video, cfg):
-    video = video.resolve()
-    if not video.is_file():
-        raise RuntimeError(f"video not found: {video}")
+    video = find_video(video)
     if video.parent.name == "_video":
         raise RuntimeError(f"refusing to process a file already under _video: {video}")
     out_dir = video.parent / "_video" / video.stem
@@ -756,28 +895,38 @@ def process(video, cfg):
         print(f"already processed: {out_dir / 'index.md'}")
         return
     lock_path = out_dir / ".lock"
+    acquire_lock(lock_path, video)
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise RuntimeError(f"processing already running for {video.name}")
-    try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
         resolve_model(cfg)
         duration = duration_seconds(video)
-        if cfg["extract_frames"]:
+        skip_reason = ""
+        if not cfg["extract_frames"]:
+            skip_reason = "not requested"
+        elif not has_video(video):
+            if not has_audio(video):
+                raise RuntimeError(f"{video.name} has no video or audio track")
+            skip_reason = "no video track"
+        if skip_reason:
+            run_cfg = cfg
+            log(f"skipping frames ({skip_reason})")
+            frames = []
+            sheets = []
+        else:
             run_cfg = apply_frame_cap(cfg, duration)
             font_path = resolve_font(run_cfg)
             frames = extract_frames(video, out_dir / "frames", run_cfg, font_path)
             sheets = build_sheets(out_dir, frames, run_cfg, font_path)
-        else:
-            run_cfg = cfg
-            log("skipping frames")
-            frames = []
-            sheets = []
         transcript_kind, _detected = transcribe(video, out_dir, cfg)
         write_index(
-            out_dir, video, duration, frames, sheets, transcript_kind, run_cfg, cfg
+            out_dir,
+            video,
+            duration,
+            frames,
+            sheets,
+            transcript_kind,
+            run_cfg,
+            cfg,
+            skip_reason,
         )
         manifest = {
             "complete": True,
@@ -876,12 +1025,22 @@ def preflight_command():
 
 
 def main(argv=None):
+    # A console that is not UTF-8 (Windows, piped output) cannot print every file
+    # name. Escape what it cannot show instead of failing after the work is done.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except AttributeError:
+            pass
     install_stop_handlers()
     args = build_parser().parse_args(argv)
-    check = subprocess.run(preflight_command(), stderr=subprocess.PIPE, text=True)
-    if check.returncode != 0:
-        sys.stderr.write(check.stderr)
-        return check.returncode
+    # The entry scripts run preflight before starting Python and say so.
+    if os.environ.get("ANALYZE_VIDEO_PREFLIGHT") != "done":
+        check = subprocess.run(preflight_command(), stderr=subprocess.PIPE, text=True)
+        if check.returncode != 0:
+            sys.stderr.write(check.stderr)
+            return check.returncode
+    load_tool_paths()
     try:
         cfg = normalize(apply_cli(load_config(resolve_config_path(args.config)), args))
         process(args.video, cfg)

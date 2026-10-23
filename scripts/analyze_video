@@ -3,4 +3,6 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 "$ROOT/scripts/preflight"
-exec python3 "$ROOT/scripts/analyze_video.py" "$@"
+# Same order as preflight's find_python, which may have accepted plain python.
+PY=$(command -v python3 || command -v python)
+ANALYZE_VIDEO_PREFLIGHT=done exec "$PY" "$ROOT/scripts/analyze_video.py" "$@"
