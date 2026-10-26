@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 _video/
 config.local.json
+*.gdoc
+*.gslides

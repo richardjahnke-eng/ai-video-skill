@@ -99,7 +99,7 @@ On first use of a model, the script downloads it into `~/.cache/whisper/` if set
 
 ## Settings
 
-In Cursor, type `/configure` to open a settings page in the Cursor browser. It writes `config.local.json` in this folder. That file overrides `config.json`, is not in git, and survives updates. A command-line flag overrides both for one run. Unknown JSON keys are an error.
+In a Cursor chat, send `/configure`. That is a message to the skill, not a Cursor menu. The agent opens a settings page in the Cursor browser. See [docs/CONFIGURE.md](docs/CONFIGURE.md). The page writes `config.local.json` in this folder. That file overrides `config.json`, is not in git, and survives updates. A command-line flag overrides both for one run. Unknown JSON keys are an error.
 
 ```json
 { "language": "en" }
