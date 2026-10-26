@@ -165,3 +165,7 @@ The Mac install above covers Cursor and Claude Code. For other layouts, copy thi
 | Codex | `~/.agents/skills/analyze-video/` | `<repo>/.agents/skills/analyze-video/` |
 
 See [Cursor's skills docs](https://cursor.com/docs/skills) and [Codex's skills docs](https://developers.openai.com/codex/skills). Codex's sandbox, like Cursor's, blocks the network and writes outside the project, so run setup (or the first run) outside it.
+
+## License
+
+[MIT](LICENSE). Use, copy, and change it freely. Keep the copyright notice.
