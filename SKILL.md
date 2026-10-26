@@ -5,8 +5,9 @@ description: >-
   a transcript with ffmpeg and local whisper.cpp, or the transcript Zoom or
   Teams saved with it. Use when the user asks to review, watch, transcribe,
   summarize, or analyze a video or recording (.mp4, .mov, .webm, .mkv, .m4v,
-  .m4a), including Zoom meetings and screen recordings. The recording stays on
-  the machine.
+  .m4a), including Zoom meetings and screen recordings, or when they type
+  /configure to change the skill's settings. The recording stays on the
+  machine.
 ---
 
 # Analyze video
@@ -55,6 +56,14 @@ If the command fails, stop and relay its output. Do not sample frames yourself a
 4. Open one file under `frames/` only when a cell is unreadable.
 
 If `index.md` says frames were skipped, read `transcript.md` and stop. There are no sheets.
+
+## Configure
+
+When the user types `/configure`, or asks to configure or change this skill's settings, open the settings page. Do this before editing any config file yourself.
+
+1. Run this skill's `scripts/configure` by its absolute path. On Windows, run `python scripts/configure.py` with that skill's Python.
+2. It prints one line, `configure: http://127.0.0.1:<port>/`. Open that URL in the Cursor browser so the user can see the page.
+3. Leave the server running. The page writes `config.local.json` in the skill folder. The next video uses those settings.
 
 ## When the user wants different settings
 

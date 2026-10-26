@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analyze video settings</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1917;
+      --muted: #57534e;
+      --line: #e7e5e4;
+      --paper: #fafaf9;
+      --card: #ffffff;
+      --accent: #9f1239;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 16px/1.45 "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
+    h1 { font-size: 1.6rem; margin: 0 0 6px; }
+    h2 { font-size: 1.05rem; margin: 0 0 12px; }
+    .lead, .hint, .status { color: var(--muted); }
+    .lead { margin: 0 0 18px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px 16px 8px;
+      margin: 0 0 14px;
+    }
+    .field { margin: 0 0 16px; }
+    label.block { display: block; font-weight: 650; margin-bottom: 4px; }
+    .hint { display: block; margin: 0 0 8px; font-size: 0.92rem; }
+    input[type="text"], input[type="number"], textarea, select {
+      width: 100%;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid #d6d3d1;
+      border-radius: 8px;
+      background: white;
+    }
+    textarea { min-height: 76px; resize: vertical; }
+    .choices { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+    .choices label { font-weight: 500; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .actions { display: flex; gap: 10px; align-items: center; }
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    button.quiet { background: #e7e5e4; color: var(--ink); }
+    .status { min-height: 1.4em; }
+    .status.error { color: #9f1239; }
+    @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Analyze video settings</h1>
+  <p class="lead">These settings apply to the next video. A flag on a single run still wins over them.</p>
+  <p class="status" id="status">Loading…</p>
+
+  <section>
+    <h2>Pictures</h2>
+    <div class="field">
+      <label class="block" for="interval_sec">Frame interval</label>
+      <span class="hint">Seconds between frames while the picture stays still. The first frame is always kept.</span>
+      <input id="interval_sec" type="number" min="0.1" step="0.1">
+    </div>
+    <div class="field">
+      <span class="block">Scene changes</span>
+      <span class="hint">Also keep a frame when the picture changes, such as a new slide or window.</span>
+      <div class="choices" id="scene_detection"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="scene_threshold">Scene sensitivity</label>
+        <span class="hint">0 catches small changes. 1 waits for a large change.</span>
+        <input id="scene_threshold" type="number" min="0" max="1" step="0.05">
+      </div>
+      <div class="field">
+        <label class="block" for="min_scene_gap_sec">Minimum gap</label>
+        <span class="hint">Seconds that must pass before another scene frame.</span>
+        <input id="min_scene_gap_sec" type="number" min="0" step="0.1">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="max_frames">Frame cap</label>
+        <span class="hint">0 means no cap. A number widens the interval and the scene gap so a long recording stays under it. 96 frames is 8 contact sheets.</span>
+        <input id="max_frames" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <label class="block" for="frame_width">Frame width</label>
+        <span class="hint">Pixels. Odd numbers are rounded down. At least 160.</span>
+        <input id="frame_width" type="number" min="160" step="2">
+      </div>
+    </div>
+    <div class="field">
+      <span class="block">What to produce</span>
+      <span class="hint">Transcript only skips the pictures. Use that when you do not need to see the recording.</span>
+      <div class="choices" id="extract_frames"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Contact sheets</h2>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="sheet_cols">Columns</label>
+        <span class="hint">Frames across each sheet.</span>
+        <input id="sheet_cols" type="number" min="1" step="1">
+      </div>
+      <div class="field">
+        <label class="block" for="sheet_rows">Rows</label>
+        <span class="hint">Frames down each sheet.</span>
+        <input id="sheet_rows" type="number" min="1" step="1">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="cell_width">Cell width</label>
+        <span class="hint">Pixels for each frame on the sheet.</span>
+        <input id="cell_width" type="number" min="1" step="1">
+      </div>
+      <div class="field">
+        <label class="block" for="cell_height">Cell height</label>
+        <span class="hint">Pixels for each frame on the sheet.</span>
+        <input id="cell_height" type="number" min="1" step="1">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="label_height">Caption height</label>
+        <span class="hint">Pixels for the time printed under each cell.</span>
+        <input id="label_height" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <label class="block" for="jpeg_quality">JPEG quality</label>
+        <span class="hint">1 to 95. Higher is sharper and larger.</span>
+        <input id="jpeg_quality" type="number" min="1" max="95" step="1">
+      </div>
+    </div>
+    <div class="field">
+      <label class="block" for="ffmpeg_q">Capture quality</label>
+      <span class="hint">ffmpeg still-image quality. Lower is sharper.</span>
+      <input id="ffmpeg_q" type="number" min="1" max="31" step="1">
+    </div>
+    <div class="field">
+      <label class="block" for="font">Timestamp font</label>
+      <span class="hint">A .ttf path. Leave empty to use Arial, DejaVu, Liberation, or a built-in font.</span>
+      <input id="font" type="text" placeholder="/path/to/font.ttf">
+    </div>
+  </section>
+
+  <section>
+    <h2>Transcript</h2>
+    <div class="field">
+      <span class="block">Meeting transcript</span>
+      <span class="hint">When a Zoom or Teams .vtt file is next to the recording, use it and keep the speaker names.</span>
+      <div class="choices" id="sidecar_transcript"></div>
+    </div>
+    <div class="field">
+      <label class="block" for="model">Whisper model</label>
+      <span class="hint">Used when there is no meeting transcript. An English-only model (names ending in .en) needs the language set to English. A .bin path uses that file.</span>
+      <select id="model"></select>
+    </div>
+    <div class="field" id="model-path-field" hidden>
+      <label class="block" for="model_path">Model file</label>
+      <span class="hint">Full path to a whisper.cpp .bin file.</span>
+      <input id="model_path" type="text" placeholder="/path/to/ggml-medium.bin">
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="language">Language</label>
+        <span class="hint">Auto needs a multilingual model.</span>
+        <select id="language"></select>
+      </div>
+      <div class="field" id="language-other-field" hidden>
+        <label class="block" for="language_other">Language code</label>
+        <span class="hint">Two or three letters, such as sv.</span>
+        <input id="language_other" type="text" maxlength="3">
+      </div>
+    </div>
+    <div class="field">
+      <label class="block" for="initial_prompt">Words to expect</label>
+      <span class="hint">Names or product terms already known for these recordings. Leave empty for none. A prompt can make Whisper write those words into speech that did not include them.</span>
+      <textarea id="initial_prompt"></textarea>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label class="block" for="threads">Whisper cores</label>
+        <span class="hint">0 uses half of this machine’s cores. A number uses that many.</span>
+        <input id="threads" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <span class="block">Audio file</span>
+        <span class="hint">The extracted WAV is deleted after Whisper unless you keep it.</span>
+        <div class="choices" id="keep_audio"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label class="block" for="model_dir">Model folder</label>
+      <span class="hint">Where downloaded models are stored. Empty uses ~/.cache/whisper.</span>
+      <input id="model_dir" type="text" placeholder="~/.cache/whisper">
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the results go</h2>
+    <div class="field">
+      <span class="block">Output folder</span>
+      <span class="hint">The project folder stays inside Cursor’s sandbox. Next to the video is the older location. A specific folder is used as-is, and _video is created inside it.</span>
+      <div class="choices" id="output_mode"></div>
+    </div>
+    <div class="field" id="output-folder-field" hidden>
+      <label class="block" for="output_folder">Folder</label>
+      <span class="hint">Results are written to _video inside this folder.</span>
+      <input id="output_folder" type="text" placeholder="/Users/you/Videos">
+    </div>
+  </section>
+
+  <div class="actions">
+    <button type="button" id="reset" class="quiet">Use built-in settings</button>
+    <span class="status" id="save-status"></span>
+  </div>
+</main>
+<script>
+const radios = {
+  scene_detection: [["On", true], ["Off", false]],
+  extract_frames: [["Contact sheets and transcript", true], ["Transcript only", false]],
+  sidecar_transcript: [["Use a saved .vtt when one is there", true], ["Always transcribe with Whisper", false]],
+  keep_audio: [["Delete the WAV", false], ["Keep the WAV", true]],
+  output_mode: [["This project", "project"], ["Next to the video", "beside"], ["A specific folder", "folder"]]
+};
+const numbers = ["interval_sec", "scene_threshold", "min_scene_gap_sec", "max_frames", "frame_width", "sheet_cols", "sheet_rows", "cell_width", "cell_height", "label_height", "jpeg_quality", "ffmpeg_q", "threads"];
+const texts = ["font", "initial_prompt", "model_dir"];
+let data = null;
+let timer = null;
+
+function radio(name, choices) {
+  const box = document.getElementById(name);
+  box.innerHTML = choices.map(([label, value]) =>
+    `<label><input type="radio" name="${name}" value="${value}"> ${label}</label>`
+  ).join("");
+  box.addEventListener("change", schedule);
+}
+
+function selected(name) {
+  const node = document.querySelector(`input[name="${name}"]:checked`);
+  return node ? node.value : "";
+}
+
+function selectRadio(name, value) {
+  const node = document.querySelector(`input[name="${name}"][value="${value}"]`);
+  if (node) node.checked = true;
+}
+
+function fill(values, models, languages) {
+  numbers.forEach((key) => { document.getElementById(key).value = values[key]; });
+  texts.forEach((key) => { document.getElementById(key).value = values[key]; });
+  selectRadio("scene_detection", values.scene_detection);
+  selectRadio("extract_frames", values.extract_frames);
+  selectRadio("sidecar_transcript", values.sidecar_transcript);
+  selectRadio("keep_audio", values.keep_audio);
+  const model = document.getElementById("model");
+  const known = models.includes(values.model);
+  model.value = known ? values.model : "path";
+  document.getElementById("model_path").value = known ? "" : values.model;
+  document.getElementById("model-path-field").hidden = known;
+  const language = document.getElementById("language");
+  const listed = languages.includes(values.language);
+  language.value = listed ? values.language : "other";
+  document.getElementById("language_other").value = listed ? "" : values.language;
+  document.getElementById("language-other-field").hidden = listed;
+  let mode = "folder";
+  if (!values.output_root) mode = "project";
+  else if (values.output_root === "beside") mode = "beside";
+  selectRadio("output_mode", mode);
+  document.getElementById("output_folder").value = mode === "folder" ? values.output_root : "";
+  document.getElementById("output-folder-field").hidden = mode !== "folder";
+}
+
+function collect() {
+  const body = {};
+  numbers.forEach((key) => { body[key] = document.getElementById(key).value; });
+  texts.forEach((key) => { body[key] = document.getElementById(key).value; });
+  body.scene_detection = selected("scene_detection") === "true";
+  body.extract_frames = selected("extract_frames") === "true";
+  body.sidecar_transcript = selected("sidecar_transcript") === "true";
+  body.keep_audio = selected("keep_audio") === "true";
+  body.model = document.getElementById("model").value === "path"
+    ? document.getElementById("model_path").value
+    : document.getElementById("model").value;
+  body.language = document.getElementById("language").value === "other"
+    ? document.getElementById("language_other").value
+    : document.getElementById("language").value;
+  const mode = selected("output_mode");
+  body.output_root = mode === "project" ? "" : mode === "beside" ? "beside" : document.getElementById("output_folder").value;
+  return body;
+}
+
+function setStatus(text, error) {
+  const node = document.getElementById("save-status");
+  node.textContent = text;
+  node.className = error ? "status error" : "status";
+}
+
+async function save() {
+  setStatus("Saving…");
+  const response = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collect())
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    setStatus(body.error || "Could not save.", true);
+    return;
+  }
+  data = body;
+  fill(body.values, body.models, body.languages);
+  setStatus("Saved.");
+}
+
+function schedule() {
+  if (selected("output_mode") === "folder" && !document.getElementById("output_folder").value.trim()) return;
+  if (document.getElementById("model").value === "path" && !document.getElementById("model_path").value.trim()) return;
+  if (document.getElementById("language").value === "other" && !document.getElementById("language_other").value.trim()) return;
+  clearTimeout(timer);
+  timer = setTimeout(save, 250);
+}
+
+function options(select, items, extra) {
+  select.innerHTML = items.map((item) => `<option value="${item}">${item}</option>`).join("") + extra;
+}
+
+async function load() {
+  const response = await fetch("/api/config");
+  data = await response.json();
+  Object.entries(radios).forEach(([name, choices]) => radio(name, choices));
+  options(document.getElementById("model"), data.models, `<option value="path">A .bin file on this machine</option>`);
+  options(document.getElementById("language"), data.languages, `<option value="other">Other</option>`);
+  document.getElementById("model").addEventListener("change", () => {
+    document.getElementById("model-path-field").hidden = document.getElementById("model").value !== "path";
+    schedule();
+  });
+  document.getElementById("language").addEventListener("change", () => {
+    document.getElementById("language-other-field").hidden = document.getElementById("language").value !== "other";
+    schedule();
+  });
+  document.getElementById("output_mode").addEventListener("change", () => {
+    document.getElementById("output-folder-field").hidden = selected("output_mode") !== "folder";
+  });
+  numbers.concat(texts).concat(["model_path", "language_other", "output_folder"]).forEach((id) => {
+    document.getElementById(id).addEventListener("change", schedule);
+  });
+  fill(data.values, data.models, data.languages);
+  document.getElementById("status").textContent = "Saved settings are stored in " + data.path + ".";
+  document.getElementById("save-status").textContent = "";
+  document.getElementById("reset").addEventListener("click", async () => {
+    setStatus("Restoring…");
+    const response = await fetch("/api/config", { method: "DELETE" });
+    const body = await response.json();
+    data = body;
+    fill(body.values, body.models, body.languages);
+    setStatus("Using the built-in settings.");
+  });
+}
+
+load().catch(() => { document.getElementById("status").textContent = "Could not load settings."; });
+</script>
+</body>
+</html>

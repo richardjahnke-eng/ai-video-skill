@@ -99,7 +99,7 @@ On first use of a model, the script downloads it into `~/.cache/whisper/` if set
 
 ## Settings
 
-Edit `config.local.json` in this folder for your own settings. It overrides `config.json`, is not in git, and survives updates. A command-line flag overrides both for one run. Unknown JSON keys are an error.
+In Cursor, type `/configure` to open a settings page in the Cursor browser. It writes `config.local.json` in this folder. That file overrides `config.json`, is not in git, and survives updates. A command-line flag overrides both for one run. Unknown JSON keys are an error.
 
 ```json
 { "language": "en" }

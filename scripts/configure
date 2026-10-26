@@ -1,0 +1,23 @@
+#!/bin/sh
+# Open the local settings page. Prints one URL and serves until stopped.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+
+if [ "$(uname -s 2>/dev/null || true)" = Darwin ]; then
+  for dir in /opt/homebrew/bin /usr/local/bin; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) [ -d "$dir" ] && PATH="$PATH:$dir" ;;
+    esac
+  done
+  export PATH
+fi
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+elif [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
+  PY="$ROOT/.venv/Scripts/python.exe"
+else
+  PY=$(command -v python3 || command -v python)
+fi
+exec "$PY" "$ROOT/scripts/configure.py" "$@"
